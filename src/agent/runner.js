@@ -33,7 +33,7 @@ const THINKING_BUDGET = Number(process.env.BOT_THINKING_BUDGET) || 500;
  * @param {Object} [p.chatContext]   { openId, chatType }
  * @param {Function} [p.emit]
  */
-export async function runCompanionMessage({ userText, history = [], boundUser = null, chatContext = {}, emit }) {
+export async function runCompanionMessage({ userText, history = [], boundUser = null, chatContext = {}, personalContext = '', emit }) {
   const send = emit || (() => Promise.resolve());
 
   const registry = buildCompanionRegistry();
@@ -61,7 +61,7 @@ export async function runCompanionMessage({ userText, history = [], boundUser = 
 
   // 参考 InkLoop：history 存干净原文；当前轮把动态上下文（记忆/专属上下文/召回）现装进 user turn。
   // personalContext/recall 先留空（C3 起接入），memory 已可注入。
-  const renderedTurn = renderCompanionTurn({ userText, boundUser, memoryInjection });
+  const renderedTurn = renderCompanionTurn({ userText, boundUser, memoryInjection, personalContext });
   const initialMessages = [...history, { role: 'user', content: renderedTurn }];
 
   try {

@@ -2,8 +2,7 @@
  * 小合陪伴服务入口。
  *
  * 独立进程：连飞书 WS → 白名单私聊路由到陪伴 harness（runCompanionMessage）→ 轻量流式卡。
- * 无状态 LLM：每轮现装 system + user turn；短期连续对话历史在本进程内存（session.js），
- * 跨天专属上下文（C3）后续接 SQLite。
+ * 无状态 LLM：每轮现装 system + user turn；对话历史 + 关系上下文落 SQLite（跨天/跨重启，companion/store.js）。
  */
 import './config/env.js';
 
@@ -13,8 +12,14 @@ import { buildSimpleCard } from './feishu/cards.js';
 import { CompanionStreamer } from './feishu/streamer.js';
 import { runCompanionMessage } from './agent/index.js';
 import { enqueueMessage } from './runtime/concurrency.js';
-import { getHistory, appendTurn, startSessionCleanup } from './runtime/session.js';
+import { getRecentHistory, appendExchange, renderPersonalContext, touchPerson, countTurnsSinceContext } from './companion/store.js';
+import { startIdleDistill } from './companion/idle-scheduler.js';
+import { distillPerson } from './companion/distill.js';
+import { startProactive, setProactiveSender } from './companion/proactive-scheduler.js';
 import { assertCompanionConfig, isCompanionTarget, nameOf, companionSummary } from './config/companions.js';
+
+// C5 轻量 compact：长会话每 K 轮后台刷新滚动摘要，避免超出窗口的早期对话被硬丢。
+const COMPACT_EVERY_TURNS = Number(process.env.XIAOHE_COMPACT_EVERY_TURNS) || 12;
 
 const PORT = Number(process.env.PORT) || 3100;
 let feishuReady = false;
@@ -36,6 +41,7 @@ async function handleMessage(text, chatId, userId, chatType) {
   }
 
   const displayName = nameOf(openId);
+  touchPerson(openId, displayName);
   const boundUser = displayName ? { username: openId, display_name: displayName, role: 'friend' } : null;
 
   const { status } = await enqueueMessage(openId, async () => {
@@ -50,7 +56,8 @@ async function handleMessage(text, chatId, userId, chatType) {
     try {
       const result = await runCompanionMessage({
         userText: text,
-        history: getHistory(openId),                 // 短期连续对话历史（干净原文）
+        history: getRecentHistory(openId),           // 跨天/跨重启的最近对话（SQLite）
+        personalContext: renderPersonalContext(openId), // 最近关系状态（上次聊到哪/没聊完的）
         boundUser,
         chatContext: { openId, chatType },
         emit: (event) => streamer.onEvent(event),
@@ -61,8 +68,14 @@ async function handleMessage(text, chatId, userId, chatType) {
       await streamer.onEvent({ type: 'error', text: '抱歉，我这会儿有点走神，等下再聊好吗？' });
       return;
     }
-    // 成功才提交本轮到历史（失败不留孤儿）
-    if (replyText) appendTurn(openId, text, replyText);
+    // 成功才提交本轮到跨天历史（失败不留孤儿）
+    if (replyText) {
+      appendExchange(openId, text, replyText);
+      // C5：活跃会话攒够 K 轮 → 后台滚动摘要（不阻塞回复），让早期上下文进 recent_summary
+      if (countTurnsSinceContext(openId) >= COMPACT_EVERY_TURNS) {
+        distillPerson(openId, boundUser).catch(err => console.warn('[Xiaohe] 滚动摘要出错:', err.message));
+      }
+    }
   });
 
   if (status === 'backpressure') {
@@ -73,7 +86,11 @@ async function handleMessage(text, chatId, userId, chatType) {
 
 async function main() {
   assertCompanionConfig();   // 生产空白名单 → 拒启动
-  startSessionCleanup();
+  startIdleDistill();        // C4：静默后把对话蒸馏进长期记忆
+  // C6/C7：主动关心。发送器注入飞书卡（scheduler 不直接依赖 feishu 层）
+  setProactiveSender((openId, text) =>
+    createAndSendCard(openId, 'open_id', buildSimpleCard(text, { level: 'info', title: '小合' })));
+  startProactive();
 
   const app = express();
   app.use(express.json());

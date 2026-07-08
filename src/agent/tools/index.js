@@ -4,10 +4,12 @@
 
 import { ToolRegistry } from '../tool-registry.js';
 import { rememberAboutPersonTool } from './memory.js';
+import { setReminderTool } from './reminder.js';
 
-/** 陪伴场景：只挂记忆类工具。 */
+/** 陪伴场景：记忆写入 + 设主动关心提醒。 */
 export function buildCompanionRegistry() {
   return new ToolRegistry([
     rememberAboutPersonTool,
+    setReminderTool,
   ]);
 }
