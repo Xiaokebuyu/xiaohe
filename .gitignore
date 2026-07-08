@@ -1,0 +1,15 @@
+node_modules/
+*.log
+logs/
+.DS_Store
+.env
+src/db/*.db
+src/db/*.db-shm
+src/db/*.db-wal
+src/memory/user-*.md
+src/memory/anon-*.md
+data/
+src/memory/_index.json
+!src/memory/.gitkeep
+!src/db/.gitkeep
+!logs/.gitkeep

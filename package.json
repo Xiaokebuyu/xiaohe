@@ -1,0 +1,19 @@
+{
+  "name": "xiaohe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "小合 —— 独立的有温度陪伴型飞书机器人（无状态 harness + 专属上下文 + 记忆）",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "smoke": "node src/agent/_smoke-companion.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
+    "@larksuiteoapi/node-sdk": "^1.60.0",
+    "async-mutex-lite": "^1.0.0",
+    "better-sqlite3": "^12.8.0",
+    "express": "^5.1.0"
+  }
+}
