@@ -12,7 +12,7 @@ import { runEngine, ERROR_TEXT } from './engine.js';
 import { PermissionEngine } from './permissions.js';
 import { buildCompanionSystemPrompt, renderCompanionTurn } from './prompts.js';
 import { buildCompanionRegistry } from './tools/index.js';
-import { loadUserMemory, renderForInjection } from '../memory/index.js';
+import { renderMemoryIndex } from '../companion/memory-store.js';
 
 /** 陪伴默认走 MiniMax-M3（百万上下文），env 可覆盖降级。 */
 const COMPANION_MODEL = process.env.BOT_COMPANION_MODEL || MEETING_MODEL;
@@ -39,13 +39,10 @@ export async function runCompanionMessage({ userText, history = [], boundUser = 
   const registry = buildCompanionRegistry();
   const permissions = new PermissionEngine({ mode: 'companion' });
 
-  // 注入该人的专属记忆
+  // 注入该人的记忆索引（主题+各条摘要；正文按需 recall_memory 调）
   let memoryInjection = '';
   try {
-    if (chatContext.openId) {
-      const mem = await loadUserMemory(chatContext.openId, boundUser);
-      memoryInjection = renderForInjection({ content: mem.content, chatType: chatContext.chatType || 'p2p' });
-    }
+    if (chatContext.openId) memoryInjection = renderMemoryIndex(chatContext.openId);
   } catch (err) {
     console.warn('[Companion] load memory failed:', err.message);
   }

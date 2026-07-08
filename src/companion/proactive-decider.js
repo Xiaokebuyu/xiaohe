@@ -5,7 +5,7 @@
 import { client, SUMMARY_MODEL } from '../model/client.js';
 import { formatBeijingNow } from '../util/time.js';
 import { lastProactiveAt, getContext } from './store.js';
-import { loadUserMemory, renderForInjection } from '../memory/index.js';
+import { renderMemoryIndex } from './memory-store.js';
 import { extractJson } from '../util/json.js';
 
 const DECIDE_MODEL = process.env.BOT_COMPANION_DISTILL_MODEL || SUMMARY_MODEL;
@@ -50,8 +50,7 @@ export function hardGate(person) {
  * @returns {Promise<{send:boolean, reason:string, message:string}>}
  */
 export async function softDecide({ openId, boundUser, hook }) {
-  const mem = await loadUserMemory(openId, boundUser);
-  const memText = renderForInjection({ content: mem.content, chatType: 'p2p' });
+  const memText = renderMemoryIndex(openId);
   const ctx = getContext(openId);
   const { dateTime, weekday } = formatBeijingNow();
   const payload = hook.payload || {};

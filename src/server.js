@@ -12,14 +12,17 @@ import { buildSimpleCard } from './feishu/cards.js';
 import { CompanionStreamer } from './feishu/streamer.js';
 import { runCompanionMessage } from './agent/index.js';
 import { enqueueMessage } from './runtime/concurrency.js';
-import { getRecentHistory, appendExchange, renderPersonalContext, renderActiveHooks, getAgentNote, touchPerson, countTurnsSinceContext } from './companion/store.js';
-import { startIdleDistill } from './companion/idle-scheduler.js';
-import { distillPerson } from './companion/distill.js';
+import { getUncompactedHistory, appendExchange, renderPersonalContext, renderActiveHooks, getAgentNote, touchPerson } from './companion/store.js';
+import { renderMemoryIndex } from './companion/memory-store.js';
+import { startDailyCompact } from './companion/daily-scheduler.js';
+import { dailyCompact } from './companion/daily-compact.js';
+import { estimateMessagesTokens, estimateTokens } from './util/tokens.js';
 import { startProactive, setProactiveSender } from './companion/proactive-scheduler.js';
 import { assertCompanionConfig, isCompanionTarget, nameOf, companionSummary } from './config/companions.js';
 
-// C5 轻量 compact：长会话每 K 轮后台刷新滚动摘要，避免超出窗口的早期对话被硬丢。
-const COMPACT_EVERY_TURNS = Number(process.env.XIAOHE_COMPACT_EVERY_TURNS) || 12;
+// 930k 兜底：单轮组装的 context 估算超此值 → 先压当天再继续（1M 窗口的安全垫）。
+const COMPACT_THRESHOLD_TOKENS = Number(process.env.XIAOHE_COMPACT_THRESHOLD_TOKENS) || 930_000;
+const OUTPUT_RESERVE_TOKENS = 6000;   // 人设 + 回复输出的粗留量
 
 const PORT = Number(process.env.PORT) || 3100;
 let feishuReady = false;
@@ -57,30 +60,33 @@ async function handleMessage(text, chatId, userId, chatType) {
     try {
       // 最近关系状态 + 小合已挂的钩子（让它知道自己记着啥→防重复设 + 可引用/撤销）
       const personalContext = [renderPersonalContext(openId), renderActiveHooks(openId)].filter(Boolean).join('\n\n');
+      const agentNote = getAgentNote(openId);
+
+      // 930k 兜底：当天原文 + 各注入块估算超阈值 → 先同步压一次当天（推进 boundary、裁历史），再取新历史
+      let history = getUncompactedHistory(openId);
+      const overhead = estimateTokens(personalContext + agentNote + renderMemoryIndex(openId)) + OUTPUT_RESERVE_TOKENS;
+      if (estimateMessagesTokens(history) + overhead > COMPACT_THRESHOLD_TOKENS) {
+        console.log(`[Xiaohe] 上下文近 930k，提前 compact ${openId.slice(0, 8)}`);
+        await dailyCompact(openId, boundUser).catch(err => console.warn('[Xiaohe] 提前 compact 出错:', err.message));
+        history = getUncompactedHistory(openId);
+      }
+
       const result = await runCompanionMessage({
         userText: text,
-        history: getRecentHistory(openId),           // 跨天/跨重启的最近对话（SQLite）
+        history,                                     // 当天原文（1M 装得下；boundary 前由 recent_summary 承接）
         personalContext,
-        agentNote: getAgentNote(openId),             // 小合自管的持久便笺（它改写、每轮注入）
+        agentNote,                                   // 小合自管的持久便笺（它改写、每轮注入）
         boundUser,
         chatContext: { openId, chatType },
         emit: (event) => streamer.onEvent(event),
       });
-      if (result?.uncaughtError) { replyText = ''; }   // 失败轮：不把 ERROR_TEXT 当回复写进历史
-      else replyText = result?.text || '';
+      replyText = result?.uncaughtError ? '' : (result?.text || '');   // 失败轮不写历史
     } catch (err) {
       console.error('[Xiaohe] 处理错误:', err);
       await streamer.onEvent({ type: 'error', text: '抱歉，我这会儿有点走神，等下再聊好吗？' });
       return;
     }
-    // 成功才提交本轮到跨天历史（失败不留孤儿）
-    if (replyText) {
-      appendExchange(openId, text, replyText);
-      // C5：活跃会话攒够 K 轮 → 后台滚动摘要（不阻塞回复），让早期上下文进 recent_summary
-      if (countTurnsSinceContext(openId) >= COMPACT_EVERY_TURNS) {
-        distillPerson(openId, boundUser).catch(err => console.warn('[Xiaohe] 滚动摘要出错:', err.message));
-      }
-    }
+    if (replyText) appendExchange(openId, text, replyText);   // 成功才落跨天历史（失败不留孤儿）
   });
 
   if (status === 'backpressure') {
@@ -91,7 +97,7 @@ async function handleMessage(text, chatId, userId, chatType) {
 
 async function main() {
   assertCompanionConfig();   // 生产空白名单 → 拒启动
-  startIdleDistill();        // C4：静默后把对话蒸馏进长期记忆
+  startDailyCompact();       // 每天凌晨 4 点压当天对话进记忆 + 裁历史（930k 兜底在消息路径里）
 
   const app = express();
   app.use(express.json());

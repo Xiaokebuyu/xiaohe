@@ -80,6 +80,18 @@ CREATE TABLE IF NOT EXISTS companion_hooks (
 );
 CREATE INDEX IF NOT EXISTS idx_hooks_fire ON companion_hooks(status, fire_at);
 
+CREATE TABLE IF NOT EXISTS memory_entries (
+  id TEXT PRIMARY KEY,
+  open_id TEXT NOT NULL,
+  parent_id TEXT,                          -- NULL=顶层主题；否则挂在某主题/条目下（多级树）
+  title TEXT NOT NULL,                      -- 短标题（进索引）
+  summary TEXT,                            -- 一句话摘要（进索引，每轮注入）
+  body TEXT,                               -- 详情（按需 recall，不全量注入）
+  salience INTEGER NOT NULL DEFAULT 3,     -- 重要度 1-5（排序/裁剪）
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS companion_outreach_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   open_id TEXT NOT NULL,
@@ -92,6 +104,8 @@ CREATE TABLE IF NOT EXISTS companion_outreach_log (
 );
 `);
 
+db.exec(`CREATE INDEX IF NOT EXISTS idx_mem_open ON memory_entries(open_id, parent_id, salience)`);
+
 // 轻量迁移：给已存在的库补新列（CREATE TABLE IF NOT EXISTS 不会改已有表）。
 function ensureColumn(table, column, decl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
@@ -101,6 +115,7 @@ function ensureColumn(table, column, decl) {
   }
 }
 ensureColumn('companion_context', 'agent_note', 'TEXT');
+ensureColumn('companion_context', 'last_daily_compact_date', 'TEXT');
 
 console.log(`[Xiaohe/DB] SQLite 就绪 @ ${DB_PATH}`);
 

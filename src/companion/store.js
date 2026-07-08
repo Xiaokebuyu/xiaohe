@@ -80,6 +80,45 @@ export function getRecentHistory(openId, limitTurns = 8) {
   return msgs;
 }
 
+/**
+ * 未压缩的对话（compact boundary=last_summarized_turn_id 之后的所有 turn）展开成 messages。
+ * 每天凌晨 compact 前，这就是"当天原文"；1M 窗口装得下，当天不裁。boundary 之前的由 recent_summary 承接。
+ */
+export function getUncompactedHistory(openId) {
+  const c = db.prepare(`SELECT last_summarized_turn_id FROM companion_context WHERE open_id=?`).get(openId);
+  const since = c?.last_summarized_turn_id || 0;
+  const rows = db.prepare(`SELECT * FROM companion_turns WHERE open_id=? AND id > ? ORDER BY id`).all(openId, since);
+  const msgs = [];
+  for (const r of rows) {
+    if (r.direction === 'inbound') { pushMsg(msgs, 'user', r.user_text); pushMsg(msgs, 'assistant', r.assistant_text); }
+    else pushMsg(msgs, 'assistant', r.assistant_text);
+  }
+  return msgs;
+}
+
+/** compact 状态（boundary + 今天有没有 daily compact 过）。 */
+export function getCompactState(openId) {
+  const c = db.prepare(`SELECT last_summarized_turn_id, last_daily_compact_date FROM companion_context WHERE open_id=?`).get(openId);
+  return { lastSummarizedTurnId: c?.last_summarized_turn_id || 0, lastDailyCompactDate: c?.last_daily_compact_date || null };
+}
+/** 标记今天已尝试 daily compact（防同日重复扫）。 */
+export function markDailyCompactDate(openId, date) {
+  db.prepare(`
+    INSERT INTO companion_context (open_id, last_daily_compact_date, updated_at)
+    VALUES (@openId, @date, COALESCE((SELECT updated_at FROM companion_context WHERE open_id=@openId), @ts))
+    ON CONFLICT(open_id) DO UPDATE SET last_daily_compact_date = @date
+  `).run({ openId, date, ts: now() });
+}
+/** 有 daily compact 候选的人：boundary 之后有 turn（有可蒸的当天对话）。 */
+export function listCompactCandidates() {
+  return db.prepare(`
+    SELECT p.open_id
+    FROM companion_people p
+    LEFT JOIN companion_context c ON c.open_id = p.open_id
+    WHERE EXISTS (SELECT 1 FROM companion_turns t WHERE t.open_id=p.open_id AND t.id > COALESCE(c.last_summarized_turn_id,0))
+  `).all().map(r => r.open_id);
+}
+
 /** 距上次对话多久了（给 personal context 用："上次是昨天/3天前聊的"）。 */
 export function getTurnsSince(openId, sinceIso) {
   return db.prepare(

@@ -1,74 +1,78 @@
 /**
- * 陪伴记忆工具 —— 让小合在对话中主动记下关于这个人的事（不只等会话结束蒸馏）
+ * 记忆工具（多级事件索引版）：
+ *   remember     —— 在某主题下 upsert 一条记忆（事件/事实）；索引每轮注入。
+ *   recall_memory —— 调某条正文，或按关键词搜（索引摘要不够时用）。
  *
- * 复用现有 memory/index.js 的存储（per-user markdown / Public·Private 分段 / 大小上限 / 写锁）。
- * 陪伴专用分段（人物画像/相处偏好/近期状态/待跟进/重要日期/约定与边界/情绪与支持方式/笔记）
- * 靠 upsertSection（整段替换）或 appendTimestampedNote（追加带日期的一行）落进对应 segment。
+ * 跟便笺（update_working_note）的区别：便笺=此刻自留的工作上下文（整段改写、临时）；
+ * 记忆=关于这个人的长期事件/事实（结构化、分主题积累、按需展开）。
  */
-
 import { defineTool } from '../tool.js';
-import {
-  loadUserMemory, saveUserMemory, checkSizeLimit,
-  upsertSection, parseSegments, composeSegments,
-} from '../../memory/index.js';
-import { formatBeijingNow } from '../../util/time.js';
+import { ensureTopic, upsertEntry, getEntry, searchEntries } from '../../companion/memory-store.js';
 
-/** 陪伴分段：整段替换型（画像类，upsert）vs 追加型（动态类，append 带日期） */
-const UPSERT_SECTIONS = new Set(['人物画像', '相处偏好', '约定与边界', '情绪与支持方式']);
-const APPEND_SECTIONS = new Set(['近期状态', '待跟进', '重要日期', '笔记']);
-const ALL_SECTIONS = [...UPSERT_SECTIONS, ...APPEND_SECTIONS];
-
-/** 追加一行带日期的短笔记到任意命名 section（通用化 appendNote，支持非「笔记」段）。 */
-function appendTimestampedNote(content, { section, note, segment = 'private' }) {
-  const { today } = formatBeijingNow();
-  const line = `- [${today}] ${note.trim()}`;
-  const segs = parseSegments(content);
-  const target = segs[segment] || '';
-  const header = `### ${section}`;
-  const esc = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp(`(^|\\n)${esc}\\n([\\s\\S]*?)(?=\\n### |$)`);
-  let updated;
-  if (re.test(target)) {
-    updated = target.replace(re, (_m, pre, body) => `${pre}${header}\n${body.trim()}\n${line}`);
-  } else {
-    updated = target.trim() ? `${target.trim()}\n\n${header}\n${line}` : `${header}\n${line}`;
-  }
-  return composeSegments({ ...segs, [segment]: updated });
-}
-
-export const rememberAboutPersonTool = defineTool({
-  name: 'remember_about_person',
+export const rememberTool = defineTool({
+  name: 'remember',
   description:
-    '记住关于当前对话对象的重要事情，方便以后还记得他。只记未来对陪伴有用的：心情/近况、'
-    + '相处偏好、你们的约定、待跟进的事、重要日期、他不希望被打扰的边界。别把每句话都记，只记值得记的。',
+    '记住关于这个人的一件事（事件/事实/偏好/约定/近况），挂在一个主题下。'
+    + '同一件事重复出现就更新（传 entry_id 或同标题会自动合并），别新建重复条目。'
+    + '只记未来对陪伴有用、值得长期记的。日常琐碎、这轮聊完就没用的别记。',
   inputSchema: {
     type: 'object',
     properties: {
-      section: { type: 'string', enum: ALL_SECTIONS, description: '记到哪个分段' },
-      content: { type: 'string', description: '要记的内容，一句话讲清' },
-      segment: { type: 'string', enum: ['public', 'private'], description: '公开画像还是私密（默认私密）' },
+      topic: { type: 'string', description: '归到哪个主题（如 工作 / 健康 / 家人 / 情绪 / 生活 / 约定）。没有会新建。' },
+      title: { type: 'string', description: '这条的短标题（如"在赶的项目"、"父亲住院"）' },
+      summary: { type: 'string', description: '一句话摘要（进索引，每轮小合能看到）' },
+      body: { type: 'string', description: '可选，更详细的内容（不进索引，按需 recall）' },
+      salience: { type: 'integer', minimum: 1, maximum: 5, description: '重要度 1-5（默认 3；越重要越不会被裁剪）' },
+      entry_id: { type: 'string', description: '可选，更新已有条目就传它的 id（me_xxx）' },
     },
-    required: ['section', 'content'],
+    required: ['topic', 'title', 'summary'],
   },
   scope: 'memory',
   isReadOnly: () => false,
   isConcurrencySafe: () => false,
   async checkPermissions(input, ctx) {
-    if (!ctx.openId) return { behavior: 'deny', message: '记忆写入需要 openId（私聊场景）' };
+    if (!ctx.openId) return { behavior: 'deny', message: '记忆需要 openId' };
     return { behavior: 'allow', updatedInput: input };
   },
   async call(input, ctx) {
-    const segment = input.segment || 'private';
-    const mem = await loadUserMemory(ctx.openId, ctx.boundUser);
-    const next = UPSERT_SECTIONS.has(input.section)
-      ? upsertSection(mem.content, { section: input.section, body: input.content, segment })
-      : appendTimestampedNote(mem.content, { section: input.section, note: input.content, segment });
+    const parentId = ensureTopic(ctx.openId, input.topic);
+    const id = upsertEntry(ctx.openId, {
+      id: input.entry_id || null,
+      parentId,
+      title: input.title,
+      summary: input.summary,
+      body: input.body ?? null,          // 没传=保留原正文（别冲空）
+      salience: input.salience ?? null,  // 没传=保留原重要度
+    });
+    return { ok: true, entry_id: id, topic: input.topic, note: `记下了「${input.title}」` };
+  },
+});
 
-    const sz = checkSizeLimit(next);
-    if (sz.overHard) {
-      return { ok: false, error: { category: 'memory_limit', retryable: false, message: '记忆超过硬上限，先整理再记' } };
+export const recallMemoryTool = defineTool({
+  name: 'recall_memory',
+  description: '调记忆细节：给 entry_id 看某条正文；或给 query 关键词搜相关条目。索引里的摘要不够、需要细节时用。',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      entry_id: { type: 'string', description: '要看正文的条目 id（me_xxx）' },
+      query: { type: 'string', description: '关键词搜索（不给 entry_id 时用）' },
+    },
+  },
+  scope: 'memory',
+  isReadOnly: () => true,
+  isConcurrencySafe: () => true,
+  async checkPermissions(input, ctx) {
+    if (!ctx.openId) return { behavior: 'deny', message: '记忆需要 openId' };
+    return { behavior: 'allow', updatedInput: input };
+  },
+  async call(input, ctx) {
+    if (input.entry_id) {
+      const e = getEntry(ctx.openId, input.entry_id);
+      return e ? { ok: true, entry: { id: e.id, title: e.title, summary: e.summary, body: e.body } } : { ok: false, note: '没找到这条' };
     }
-    await saveUserMemory(ctx.openId, ctx.boundUser, next);
-    return { ok: true, section: input.section, sizeBytes: sz.sizeBytes, overSoft: sz.overSoft };
+    if (input.query) {
+      return { ok: true, matches: searchEntries(ctx.openId, input.query) };
+    }
+    return { ok: false, note: '给个 entry_id 或 query' };
   },
 });
