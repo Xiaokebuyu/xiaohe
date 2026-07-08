@@ -78,12 +78,15 @@ export function buildCompanionSystemPrompt() {
  * @param {string} [p.recall]              按当前话题召回的相关往事（C 后续接入，先留空）
  * @returns {string}
  */
-export function renderCompanionTurn({ userText, boundUser, memoryInjection = '', personalContext = '', recall = '' }) {
+export function renderCompanionTurn({ userText, boundUser, memoryInjection = '', personalContext = '', recall = '', agentNote = '' }) {
   const who = boundUser ? (boundUser.display_name || boundUser.username) : '（还没绑定账号的人，但你依然认真陪他）';
   const parts = [`（现在 ${beijingNowLine()}。你在陪的人：${who}。）`];
 
   if (memoryInjection) {
     parts.push(`【你对他的记忆】\n${memoryInjection}\n（自然地用，别生硬引用，别说"根据我的记忆"。）`);
+  }
+  if (agentNote) {
+    parts.push(`【你给自己留的便笺】\n${agentNote}\n（这是你自己记的，可随时用 update_working_note 改写。）`);
   }
   if (personalContext) {
     parts.push(`【最近的关系状态】\n${personalContext}`);

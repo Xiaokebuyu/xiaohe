@@ -12,7 +12,7 @@ import { buildSimpleCard } from './feishu/cards.js';
 import { CompanionStreamer } from './feishu/streamer.js';
 import { runCompanionMessage } from './agent/index.js';
 import { enqueueMessage } from './runtime/concurrency.js';
-import { getRecentHistory, appendExchange, renderPersonalContext, renderActiveHooks, touchPerson, countTurnsSinceContext } from './companion/store.js';
+import { getRecentHistory, appendExchange, renderPersonalContext, renderActiveHooks, getAgentNote, touchPerson, countTurnsSinceContext } from './companion/store.js';
 import { startIdleDistill } from './companion/idle-scheduler.js';
 import { distillPerson } from './companion/distill.js';
 import { startProactive, setProactiveSender } from './companion/proactive-scheduler.js';
@@ -61,6 +61,7 @@ async function handleMessage(text, chatId, userId, chatType) {
         userText: text,
         history: getRecentHistory(openId),           // 跨天/跨重启的最近对话（SQLite）
         personalContext,
+        agentNote: getAgentNote(openId),             // 小合自管的持久便笺（它改写、每轮注入）
         boundUser,
         chatContext: { openId, chatType },
         emit: (event) => streamer.onEvent(event),

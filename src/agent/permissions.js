@@ -68,12 +68,12 @@ export class PermissionEngine {
         };
 
       case 'companion':
-        // 陪伴模式：放行小合本地作用域工具（记忆 / 提醒）+ 只读工具；拒 panel/外部写
-        if ((tool.scope === 'memory' || tool.scope === 'reminder') && ctx.openId) {
+        // 陪伴模式：放行小合本地作用域工具（记忆 / 提醒 / 便笺）+ 只读工具；拒 panel/外部写
+        if (['memory', 'reminder', 'note'].includes(tool.scope) && ctx.openId) {
           return { behavior: 'allow', updatedInput: nextInput };
         }
         if (readOnly) return { behavior: 'allow', updatedInput: nextInput };
-        return { behavior: 'deny', message: '陪伴模式只允许记忆/提醒等本地操作，不碰平台或外部写。' };
+        return { behavior: 'deny', message: '陪伴模式只允许记忆/提醒/便笺等本地操作，不碰平台或外部写。' };
 
       default:
         return { behavior: 'deny', message: `未知运行模式 ${this.mode}` };

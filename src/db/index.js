@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS companion_context (
   open_id TEXT PRIMARY KEY,
   recent_summary TEXT,
   active_threads_json TEXT,
+  agent_note TEXT,
   last_summarized_turn_id INTEGER DEFAULT 0,
   last_distill_attempt_at TEXT,
   distill_failures INTEGER NOT NULL DEFAULT 0,
@@ -90,6 +91,16 @@ CREATE TABLE IF NOT EXISTS companion_outreach_log (
   created_at TEXT DEFAULT (datetime('now'))
 );
 `);
+
+// 轻量迁移：给已存在的库补新列（CREATE TABLE IF NOT EXISTS 不会改已有表）。
+function ensureColumn(table, column, decl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);
+  if (!cols.includes(column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`);
+    console.log(`[Xiaohe/DB] 迁移：${table}.${column} 已补`);
+  }
+}
+ensureColumn('companion_context', 'agent_note', 'TEXT');
 
 console.log(`[Xiaohe/DB] SQLite 就绪 @ ${DB_PATH}`);
 

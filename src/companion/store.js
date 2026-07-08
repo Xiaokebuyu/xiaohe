@@ -131,6 +131,20 @@ export function updateContext(openId, { recentSummary = null, activeThreads = nu
   });
 }
 
+// ── agent 便笺（小合自己掌管、自由改写、每轮注入的持久上下文区）──
+export function getAgentNote(openId) {
+  const r = db.prepare(`SELECT agent_note FROM companion_context WHERE open_id=?`).get(openId);
+  return r?.agent_note || '';
+}
+/** 小合改写便笺（overwrite）。空串=清空。持久化，重启不丢，改动前一直生效。 */
+export function setAgentNote(openId, content) {
+  db.prepare(`
+    INSERT INTO companion_context (open_id, agent_note, updated_at)
+    VALUES (@openId, @note, COALESCE((SELECT updated_at FROM companion_context WHERE open_id=@openId), @ts))
+    ON CONFLICT(open_id) DO UPDATE SET agent_note = @note
+  `).run({ openId, note: content ?? '', ts: now() });
+}
+
 // ── distill 尝试/失败追踪（F3：防蒸馏失败每分钟无限重试烧 token）──
 export function markDistillAttempt(openId) {
   db.prepare(`
