@@ -20,7 +20,8 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { formatBeijingNow } from '../util/time.js';
 
-const MEMORY_DIR = join(dirname(fileURLToPath(import.meta.url)));
+// 记忆目录：默认 src/memory/；生产（Docker）应设 XIAOHE_MEMORY_DIR 指向挂载卷，否则容器重建丢记忆。
+const MEMORY_DIR = process.env.XIAOHE_MEMORY_DIR || join(dirname(fileURLToPath(import.meta.url)));
 const INDEX_PATH = join(MEMORY_DIR, '_index.json');
 
 export const MEMORY_SIZE_SOFT_LIMIT = 16 * 1024;

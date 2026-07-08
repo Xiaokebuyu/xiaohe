@@ -16,7 +16,10 @@ API 无状态；状态全在每次现装的 system（纯静态人设 + cache_con
 - **memory**：长期人物画像（`src/memory/` markdown）。
 
 ## Build order
-- **C1 ✅ 已建**：反应式陪伴最小闭环。飞书 WS → 白名单私聊 → `runCompanionMessage`（静态人设 system + `renderCompanionTurn` 动态 turn + M3 + `remember_about_person` 工具 + companion 权限）→ 轻量流式卡。`npm run smoke` 12 项过。**待真跑**：私聊验温度 + M3 流式/tool + 记忆写读。
+- **C1 ✅ 已建（+2 路 codex review 硬化）**：反应式陪伴最小闭环。飞书 WS → 白名单私聊 → `runCompanionMessage`（静态人设 system + `renderCompanionTurn` 动态 turn + M3 + `remember_about_person` 工具 + companion 权限）→ 轻量流式卡。`npm run smoke` 12 项过。
+  - review 落地（B 意图 + A 代码）：**短期连续对话历史**（`runtime/session.js`，TTL 滑动窗，解"第二句失忆"致命项）；**称呼映射**（`config/companions.js`，boundUser 带 display_name）；**生产空白名单拒启** + `XIAOHE_ALLOW_ALL_P2P`；**陪伴专用暖调卡**（`buildCompanionInitial/Done`，去绿勾/耗时/"值班"）；**streamer flush 串行化 + 收尾 await 在途**（防乱序/交错）；**health 反映飞书状态**（503）；群里 @ 回"只私聊陪你"；`XIAOHE_MEMORY_DIR` 持久化；panel 加 `DISABLE_BOT` 安全 cutover。
+  - **未采纳**（核实后）：A1 长回复重复回复（旧生产 bot 同结构无此问题，WS 收即 ACK）；A3 WSClient onReady/onError（lark 无此构造 API，codex 猜的）。
+  - **待真跑**：私聊验温度 + M3 流式/tool + 记忆写读 + 连续对话接得住"刚才"。
 - **C2** 白名单落 DB + 身份映射（openId→显示名，让人设知道在陪谁）。当前白名单走 env、boundUser=null。
 - **C3** 专属上下文 SQLite（`companion_people/turns/context/followups`）——跨天"记得上次聊到哪"。这是"记不住人"的真正解药。同时把 history 从空接上滑动窗。
 - **C4** 陪伴 distill（会话结束/idle 整理进 memory，去重）。

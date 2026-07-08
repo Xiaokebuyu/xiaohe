@@ -162,6 +162,34 @@ export function buildChatCardInitial(scene = 'default') {
   };
 }
 
+// ── 陪伴专用卡（暖调，不用工作味的绿勾/耗时/"值班"）──
+
+/** 陪伴初始卡：温和 header + 空 body（summary 传"在听"的在场感，body 到 token 就填）。 */
+export function buildCompanionInitial() {
+  return {
+    schema: '2.0',
+    config: {
+      streaming_mode: true,
+      streaming_config: STREAMING_CONFIG,
+      summary: { content: '小合在听着呢～' },
+      update_multi: true,
+      width_mode: 'fill',
+    },
+    header: { title: { tag: 'plain_text', content: BOT_NAME }, template: 'wathet' },
+    body: { elements: [{ tag: 'markdown', element_id: 'main_text_0', content: '' }] },
+  };
+}
+
+/** 陪伴完成卡：温和 header，无绿勾、无耗时、无"完成"语言。 */
+export function buildCompanionDone(bodyText) {
+  return {
+    schema: '2.0',
+    config: { streaming_mode: false, update_multi: true, width_mode: 'fill' },
+    header: { title: { tag: 'plain_text', content: BOT_NAME }, template: 'wathet' },
+    body: { elements: [{ tag: 'markdown', element_id: 'main_text_0', content: String(bodyText || '') }] },
+  };
+}
+
 /**
  * 思考胶囊 — 展开态（思考中）
  * 胶囊在文本开始时不再删除，而是 patch 成收起态带摘要（见 buildPillCollapsePatch）
