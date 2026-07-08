@@ -60,8 +60,13 @@ export async function softDecide({ openId, boundUser, hook }) {
 非常克制：只有当"这一句真的对他有意义、此刻不突兀"才发。宁可不发。别为了刷存在感发。
 输出严格 JSON：{"send": true/false, "reason": "一句话理由", "message": "要发的话（温柔、短、自然，像朋友随口关心；不发则空串）"}`;
 
+  const sourceHint = payload.source === 'user_requested'
+    ? '（这是他当时明确让你提醒的，可以直接一点：「你让我提醒你…」）'
+    : '（这是你自己记下来想跟进的，别显得像定了闹钟，更像突然想起来关心：「突然想起你…」）';
+
   const user = `现在：${dateTime} ${weekday}
-关心的缘由（钩子）：kind=${hook.kind}${payload.about ? `，关于：${payload.about}` : ''}${payload.note ? `，备注：${payload.note}` : ''}
+关心的缘由（钩子）：${payload.about ? `关于：${payload.about}` : `kind=${hook.kind}`}${payload.note ? `，备注：${payload.note}` : ''}
+${sourceHint}
 你对他的记忆：\n${memText || '（还不多）'}
 最近关系状态：${ctx.recentSummary || '（无）'}`;
 

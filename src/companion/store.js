@@ -188,6 +188,33 @@ export function listDueHooks(nowIso = now()) {
     `SELECT * FROM companion_hooks WHERE status='active' AND fire_at <= ? ORDER BY fire_at LIMIT 50`
   ).all(nowIso).map(h => { try { h.payload = JSON.parse(h.payload_json || '{}'); } catch { h.payload = {}; } return h; });
 }
+/** 某人当前挂着的 active 钩子（给小合注入上下文用：防重复设 + 能引用/撤销）。 */
+export function listActiveHooks(openId, limit = 10) {
+  return db.prepare(
+    `SELECT id, kind, fire_at, payload_json FROM companion_hooks WHERE open_id=? AND status='active' ORDER BY fire_at LIMIT ?`
+  ).all(openId, limit).map(h => { try { h.payload = JSON.parse(h.payload_json || '{}'); } catch { h.payload = {}; } return h; });
+}
+
+/** UTC ISO → 北京时间简述（跟 user turn 里的当前时间对齐，别让小合按 UTC 误解）。 */
+function beijingBrief(iso) {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return '';
+  return new Date(ms).toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+/** 渲染小合已挂钩子的简述，注入 user turn，让它知道自己记着啥（防重复 + 可撤/可提）。为空返回 ''。 */
+export function renderActiveHooks(openId) {
+  const hooks = listActiveHooks(openId);
+  if (!hooks.length) return '';
+  const lines = hooks.map(h => {
+    const when = h.fire_at ? beijingBrief(h.fire_at) : '';
+    return `- [${h.id}] ${h.payload?.about || h.kind}${when ? `（约 ${when}，北京时间）` : ''}`;
+  });
+  return `你已经记着要跟进这些（别重复设；不需要了可用 cancel_reminder 撤）：\n${lines.join('\n')}`;
+}
+
 export function markHookFired(id) {
   db.prepare(`UPDATE companion_hooks SET status='fired', fired_at=? WHERE id=?`).run(now(), id);
 }
