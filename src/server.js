@@ -26,6 +26,7 @@ let feishuReady = false;
 
 async function handleMessage(text, chatId, userId, chatType) {
   const openId = userId;
+  if (chatType === 'p2p') console.log(`[Xiaohe] 收到私聊 openId=${openId} 称呼=${nameOf(openId) || '(未设)'}`);
 
   // 陪伴只走私聊；群里被 @ 温和说明，不进 harness（避免"切版后群里像坏了"）
   if (chatType !== 'p2p') {
@@ -62,7 +63,8 @@ async function handleMessage(text, chatId, userId, chatType) {
         chatContext: { openId, chatType },
         emit: (event) => streamer.onEvent(event),
       });
-      replyText = result?.text || '';
+      if (result?.uncaughtError) { replyText = ''; }   // 失败轮：不把 ERROR_TEXT 当回复写进历史
+      else replyText = result?.text || '';
     } catch (err) {
       console.error('[Xiaohe] 处理错误:', err);
       await streamer.onEvent({ type: 'error', text: '抱歉，我这会儿有点走神，等下再聊好吗？' });
@@ -87,10 +89,6 @@ async function handleMessage(text, chatId, userId, chatType) {
 async function main() {
   assertCompanionConfig();   // 生产空白名单 → 拒启动
   startIdleDistill();        // C4：静默后把对话蒸馏进长期记忆
-  // C6/C7：主动关心。发送器注入飞书卡（scheduler 不直接依赖 feishu 层）
-  setProactiveSender((openId, text) =>
-    createAndSendCard(openId, 'open_id', buildSimpleCard(text, { level: 'info', title: '小合' })));
-  startProactive();
 
   const app = express();
   app.use(express.json());
@@ -105,6 +103,13 @@ async function main() {
   if (!feishuReady) {
     console.error('[Xiaohe] ⚠️ 飞书未就绪（缺凭据或连接失败）。/health 返回 503，请检查 FEISHU_APP_ID/SECRET。');
   } else {
+    // C6/C7：主动关心只在飞书就绪后启。发送器无 messageId 就 throw（scheduler 据此 defer 重试，不记假消息）
+    setProactiveSender(async (openId, text) => {
+      const res = await createAndSendCard(openId, 'open_id', buildSimpleCard(text, { level: 'info', title: '小合' }));
+      if (!res?.messageId) throw new Error('飞书主动消息发送失败（无 messageId）');
+      return res;
+    });
+    startProactive();
     console.log(`[Xiaohe] 陪伴服务已就绪，等待私聊。${companionSummary()}`);
   }
 }

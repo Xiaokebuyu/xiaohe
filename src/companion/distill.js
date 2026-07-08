@@ -8,17 +8,11 @@
  */
 import { client, SUMMARY_MODEL } from '../model/client.js';
 import { loadUserMemory, saveUserMemory, appendNote, upsertSection, checkSizeLimit } from '../memory/index.js';
-import { getRecentHistory, getContext, updateContext } from './store.js';
+import { getRecentHistory, getContext, updateContext, getMaxTurnId, markDistillAttempt, markDistillResult } from './store.js';
+import { extractJson } from '../util/json.js';
 
 const DISTILL_MODEL = process.env.BOT_COMPANION_DISTILL_MODEL || SUMMARY_MODEL;
 const UPSERT_SECTIONS = new Set(['人物画像', '相处偏好', '约定与边界', '情绪与支持方式']);
-
-function extractJson(text) {
-  if (!text) return null;
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
-}
 
 /**
  * 蒸馏一个人的近期对话。成功返回 true。
@@ -28,6 +22,10 @@ function extractJson(text) {
 export async function distillPerson(openId, boundUser = null) {
   const history = getRecentHistory(openId, 12);
   if (history.length < 2) return false;   // 没聊什么，不蒸
+
+  // 先记一次尝试（F3：即使失败也不会下一分钟又选中同一个人无限重试）+ 捕获水位（F4）
+  markDistillAttempt(openId);
+  const throughTurnId = getMaxTurnId(openId);
 
   const mem = await loadUserMemory(openId, boundUser);
   const ctx = getContext(openId);
@@ -58,31 +56,40 @@ memory_notes 只放真正值得长期记的（可空数组）。upsert=画像类
     raw = resp.content?.filter(b => b.type === 'text').map(b => b.text).join('') || '';
   } catch (err) {
     console.warn(`[Companion/Distill] LLM 失败 ${openId.slice(0, 8)}:`, err.message);
+    markDistillResult(openId, false);
     return false;
   }
 
   const out = extractJson(raw);
-  if (!out) { console.warn('[Companion/Distill] 解析 JSON 失败'); return false; }
+  if (!out) { console.warn('[Companion/Distill] 解析 JSON 失败'); markDistillResult(openId, false); return false; }
 
-  // 1. 更新关系上下文（下次开场/personal context 用）
-  updateContext(openId, {
-    recentSummary: typeof out.recent_summary === 'string' ? out.recent_summary : null,
-    activeThreads: Array.isArray(out.active_threads) ? out.active_threads.slice(0, 3) : null,
-  });
-
-  // 2. 补写长期记忆（去重后由 LLM 判断，这里只落）
+  // 1. 先写长期记忆（F9：memory 是易失的，先落它；失败就别推进上下文水位，好重试）
   if (Array.isArray(out.memory_notes) && out.memory_notes.length) {
     let content = mem.content;
     for (const note of out.memory_notes) {
       if (!note?.section || !note?.content) continue;
-      content = (note.mode === 'upsert' || UPSERT_SECTIONS.has(note.section))
+      const next = (note.mode === 'upsert' || UPSERT_SECTIONS.has(note.section))
         ? upsertSection(content, { section: note.section, body: note.content, segment: 'private' })
         : appendNote(content, { note: `${note.section}：${note.content}`, segment: 'private' });
+      if (checkSizeLimit(next).overHard) break;   // 超硬上限就停在上一版，别写坏
+      content = next;
     }
-    if (!checkSizeLimit(content).overHard) {
+    try {
       await saveUserMemory(openId, boundUser, content);
+    } catch (err) {
+      console.warn('[Companion/Distill] 存记忆失败，暂不推进上下文（下次重试）:', err.message);
+      markDistillResult(openId, false);
+      return false;
     }
   }
+
+  // 2. 记忆落好后再更新关系上下文 + 推进水位（用蒸馏时捕获的 throughTurnId）
+  updateContext(openId, {
+    recentSummary: typeof out.recent_summary === 'string' ? out.recent_summary : null,
+    activeThreads: Array.isArray(out.active_threads) ? out.active_threads.slice(0, 3) : null,
+    lastSummarizedTurnId: throughTurnId,
+  });
+  markDistillResult(openId, true);
 
   console.log(`[Companion/Distill] ${openId.slice(0, 8)} 已整理（threads=${(out.active_threads || []).length} notes=${(out.memory_notes || []).length}）`);
   return true;

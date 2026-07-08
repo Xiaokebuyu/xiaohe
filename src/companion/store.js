@@ -48,9 +48,20 @@ export function appendOutbound(openId, assistantText, source = 'proactive') {
   _markBotAt.run({ openId, ts: now() });
 }
 
+/** 追加一条消息，保证 messages 交替：合并连续同角色；首条是 assistant 则先补一条合成 user。 */
+function pushMsg(msgs, role, content) {
+  if (!content) return;
+  const last = msgs[msgs.length - 1];
+  if (last && last.role === role) { last.content += `\n\n${content}`; return; }
+  if (role === 'assistant' && msgs.length === 0) {
+    msgs.push({ role: 'user', content: '（系统记录：小合之前主动发起过一次关心，用户当时没先说话。）' });
+  }
+  msgs.push({ role, content });
+}
+
 /**
  * 最近 N 轮展开成 Anthropic messages（干净原文，不含现装动态上下文）。
- * inbound → user+assistant 两条；outbound → 只 assistant 一条。
+ * inbound → user+assistant；outbound → 只 assistant。经 pushMsg 保证角色交替（防端点报错）。
  */
 export function getRecentHistory(openId, limitTurns = 8) {
   const rows = db.prepare(
@@ -60,10 +71,10 @@ export function getRecentHistory(openId, limitTurns = 8) {
   const msgs = [];
   for (const r of rows) {
     if (r.direction === 'inbound') {
-      if (r.user_text) msgs.push({ role: 'user', content: r.user_text });
-      if (r.assistant_text) msgs.push({ role: 'assistant', content: r.assistant_text });
+      pushMsg(msgs, 'user', r.user_text);
+      pushMsg(msgs, 'assistant', r.assistant_text);
     } else {
-      if (r.assistant_text) msgs.push({ role: 'assistant', content: r.assistant_text });
+      pushMsg(msgs, 'assistant', r.assistant_text);
     }
   }
   return msgs;
@@ -87,6 +98,9 @@ export function countTurnsSinceContext(openId) {
 
 // ── 关系上下文 ──
 const _maxTurnId = db.prepare(`SELECT COALESCE(MAX(id),0) m FROM companion_turns WHERE open_id=?`);
+/** 当前该人最新 turn id（distill 前捕获作水位，避免 await 期间进的新轮被误标已摘要）。 */
+export function getMaxTurnId(openId) { return _maxTurnId.get(openId).m; }
+
 const _upsertContext = db.prepare(`
   INSERT INTO companion_context (open_id, recent_summary, active_threads_json, last_summarized_turn_id, updated_at)
   VALUES (@openId, @recentSummary, @activeThreads, @maxId, @ts)
@@ -103,32 +117,54 @@ export function getContext(openId) {
   try { threads = row.active_threads_json ? JSON.parse(row.active_threads_json) : []; } catch { /* ignore */ }
   return { recentSummary: row.recent_summary || '', activeThreads: threads, updatedAt: row.updated_at };
 }
-/** 更新关系上下文（distill/compact 的落点）。同时把"已摘要到"的水位推到当前最新轮。 */
-export function updateContext(openId, { recentSummary = null, activeThreads = null } = {}) {
+/**
+ * 更新关系上下文（distill/compact 的落点）。水位 last_summarized_turn_id 显式传入更准
+ * （distill 应传"读 history 时捕获的 turn id"，而非当前 max——防 await 期间的新轮被误标）。
+ */
+export function updateContext(openId, { recentSummary = null, activeThreads = null, lastSummarizedTurnId = null } = {}) {
   _upsertContext.run({
     openId,
     recentSummary,
     activeThreads: activeThreads ? JSON.stringify(activeThreads) : null,
-    maxId: _maxTurnId.get(openId).m,
+    maxId: lastSummarizedTurnId ?? _maxTurnId.get(openId).m,
     ts: now(),
   });
+}
+
+// ── distill 尝试/失败追踪（F3：防蒸馏失败每分钟无限重试烧 token）──
+export function markDistillAttempt(openId) {
+  db.prepare(`
+    INSERT INTO companion_context (open_id, last_distill_attempt_at, updated_at)
+    VALUES (@openId, @ts, COALESCE((SELECT updated_at FROM companion_context WHERE open_id=@openId), @ts))
+    ON CONFLICT(open_id) DO UPDATE SET last_distill_attempt_at = @ts
+  `).run({ openId, ts: now() });
+}
+export function markDistillResult(openId, ok) {
+  db.prepare(`UPDATE companion_context SET distill_failures = CASE WHEN @ok THEN 0 ELSE distill_failures + 1 END WHERE open_id=@openId`)
+    .run({ openId, ok: ok ? 1 : 0 });
 }
 
 /**
  * 待蒸馏候选：已静默（last_active 早于 idle 阈值）且自上次蒸馏后有新对话
  * （last_user_at 晚于 context.updated_at，或还没蒸过）。返回 openId 数组。
  */
-export function listDistillCandidates(idleMs) {
+export function listDistillCandidates(idleMs, retryMs = 30 * 60 * 1000) {
   const cutoff = new Date(Date.now() - idleMs).toISOString();
+  const retryCutoff = new Date(Date.now() - retryMs).toISOString();
+  // "有新料"用 last_summarized_turn_id 判（不受 markDistillAttempt 触碰 updated_at 影响）；
+  // 失败后靠 last_distill_attempt_at 的重试窗排除，避免每分钟无限重蒸。
   const rows = db.prepare(`
     SELECT p.open_id
     FROM companion_people p
     LEFT JOIN companion_context c ON c.open_id = p.open_id
     WHERE p.last_active_at IS NOT NULL
       AND p.last_active_at < @cutoff
-      AND p.last_user_at IS NOT NULL
-      AND (c.updated_at IS NULL OR p.last_user_at > c.updated_at)
-  `).all({ cutoff });
+      AND (c.last_distill_attempt_at IS NULL OR c.last_distill_attempt_at < @retryCutoff)
+      AND EXISTS (
+        SELECT 1 FROM companion_turns t
+        WHERE t.open_id = p.open_id AND t.id > COALESCE(c.last_summarized_turn_id, 0)
+      )
+  `).all({ cutoff, retryCutoff });
   return rows.map(r => r.open_id);
 }
 
@@ -157,6 +193,11 @@ export function markHookFired(id) {
 }
 export function markHookSkipped(id, reason) {
   db.prepare(`UPDATE companion_hooks SET status='skipped', skip_reason=?, fired_at=? WHERE id=?`).run(reason || '', now(), id);
+}
+/** transient 原因（静默/冷却/发送失败等）：改 fire_at 延后重试，保持 active，别永久 skip。 */
+export function deferHook(id, reason, fireAtIso) {
+  db.prepare(`UPDATE companion_hooks SET fire_at=?, skip_reason=? WHERE id=? AND status='active'`)
+    .run(fireAtIso, reason || '', id);
 }
 export function cancelHook(id) {
   db.prepare(`UPDATE companion_hooks SET status='cancelled' WHERE id=?`).run(id);

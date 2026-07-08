@@ -6,6 +6,7 @@ import { client, SUMMARY_MODEL } from '../model/client.js';
 import { formatBeijingNow } from '../util/time.js';
 import { lastProactiveAt, getContext } from './store.js';
 import { loadUserMemory, renderForInjection } from '../memory/index.js';
+import { extractJson } from '../util/json.js';
 
 const DECIDE_MODEL = process.env.BOT_COMPANION_DISTILL_MODEL || SUMMARY_MODEL;
 const COOLDOWN_MS = Number(process.env.XIAOHE_PROACTIVE_COOLDOWN_MS) || 20 * 60 * 60 * 1000;  // 20h 内不重复主动
@@ -71,10 +72,7 @@ export async function softDecide({ openId, boundUser, hook }) {
   } catch (err) {
     return { send: false, reason: `llm_error:${err.message}`, message: '' };
   }
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) return { send: false, reason: 'parse_failed', message: '' };
-  try {
-    const out = JSON.parse(m[0]);
-    return { send: !!out.send && !!out.message, reason: String(out.reason || ''), message: String(out.message || '').trim() };
-  } catch { return { send: false, reason: 'parse_failed', message: '' }; }
+  const out = extractJson(raw);
+  if (!out) return { send: false, reason: 'parse_failed', message: '' };
+  return { send: !!out.send && !!out.message, reason: String(out.reason || ''), message: String(out.message || '').trim() };
 }

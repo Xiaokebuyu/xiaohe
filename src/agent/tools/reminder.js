@@ -26,10 +26,11 @@ export const setReminderTool = defineTool({
   isConcurrencySafe: () => false,
   async checkPermissions(input, ctx) {
     if (!ctx.openId) return { behavior: 'deny', message: '设提醒需要 openId' };
-    if (!/^\d{4}-\d{2}-\d{2}T/.test(input.fire_at || '')) {
-      return { behavior: 'deny', message: 'fire_at 必须是 ISO 8601 时间' };
-    }
-    return { behavior: 'allow', updatedInput: input };
+    const fireMs = Date.parse(input.fire_at || '');
+    if (!Number.isFinite(fireMs)) return { behavior: 'deny', message: 'fire_at 必须是可解析的 ISO 8601 时间（带时区）' };
+    if (fireMs <= Date.now() + 60_000) return { behavior: 'deny', message: 'fire_at 不能是过去或一分钟内的时间' };
+    // 统一存 UTC ISO（带 Z），避免 +08:00 原样入库跟 due 查询的 UTC 比较错 8 小时
+    return { behavior: 'allow', updatedInput: { ...input, fire_at: new Date(fireMs).toISOString() } };
   },
   async call(input, ctx) {
     const id = createHook(ctx.openId, {

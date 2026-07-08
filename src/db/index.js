@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS companion_context (
   recent_summary TEXT,
   active_threads_json TEXT,
   last_summarized_turn_id INTEGER DEFAULT 0,
+  last_distill_attempt_at TEXT,
+  distill_failures INTEGER NOT NULL DEFAULT 0,
   compact_failures INTEGER DEFAULT 0,
   token_factor REAL,
   updated_at TEXT DEFAULT (datetime('now'))
