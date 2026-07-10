@@ -9,16 +9,19 @@
 import { defineTool } from '../tool.js';
 import { setAgentNote } from '../../companion/store.js';
 
+// 便笺每轮都会整段注入上下文；没有上限的话模型一次写太长会永久占用 token，compact 也救不了（不在历史里，不会被裁）。
+const AGENT_NOTE_MAX_CHARS = 3000;
+
 export const updateWorkingNoteTool = defineTool({
   name: 'update_working_note',
   description:
     '改写你自己的便笺（一块只有你看得到、每轮都会出现在你眼前的持久笔记）。'
     + '用来记你此刻对这个人/这段关系的判断和留意点——比如"他这阵子在赶项目、情绪紧绷，先多接住少建议"。'
-    + '整段覆盖式改写；内容变了就更新，不需要了就写空。这不是发给用户的话。',
+    + `整段覆盖式改写；内容变了就更新，不需要了就写空。这不是发给用户的话。最多 ${AGENT_NOTE_MAX_CHARS} 字，写简短。`,
   inputSchema: {
     type: 'object',
     properties: {
-      content: { type: 'string', description: '便笺的新全文（覆盖旧的）。留空字符串=清空便笺。' },
+      content: { type: 'string', maxLength: AGENT_NOTE_MAX_CHARS, description: '便笺的新全文（覆盖旧的）。留空字符串=清空便笺。' },
     },
     required: ['content'],
   },
@@ -30,7 +33,10 @@ export const updateWorkingNoteTool = defineTool({
     return { behavior: 'allow', updatedInput: input };
   },
   async call(input, ctx) {
-    setAgentNote(ctx.openId, input.content || '');
-    return { ok: true, note: '（便笺已更新，下一轮起生效）' };
+    let content = input.content || '';
+    const truncated = content.length > AGENT_NOTE_MAX_CHARS;
+    if (truncated) content = content.slice(0, AGENT_NOTE_MAX_CHARS);
+    setAgentNote(ctx.openId, content);
+    return { ok: true, note: truncated ? `（便笺已更新并截断到 ${AGENT_NOTE_MAX_CHARS} 字，下一轮起生效）` : '（便笺已更新，下一轮起生效）' };
   },
 });

@@ -10,10 +10,17 @@
 ## 架构基线（对齐 InkLoop）
 API 无状态；状态全在每次现装的 system（纯静态人设 + cache_control）+ 现渲染的 user turn（`renderCompanionTurn`：记忆/专属上下文/召回/当前请求）。长延续靠召回不靠长 transcript。模型=MiniMax-M3（1M）。
 
-## 三层上下文
-- **session**：当前连续聊天窗口（可 compact/裁剪）。
-- **专属上下文**：跨天关系状态（上次聊到哪/open loops/主动说过啥）——自己的 SQLite（`src/db/`，C3 起用）。
-- **memory**：长期人物画像（`src/memory/` markdown）。
+## 上下文分层（现状，2026-07-08 重构后）
+- **当天对话**：`companion_turns` 里 boundary（last_summarized_turn_id）之后的原文；1M 窗口装得下当天，不裁。
+- **关系上下文**：跨天 recent_summary + active_threads + 活跃钩子（每轮注入 personalContext）。
+- **便笺 agent_note**：小合自管、整段改写、每轮注入的持久区（`update_working_note`）。
+- **记忆**：**多级事件索引条目树**（`memory_entries`，SQLite）——主题→事件条目（title/summary/body/salience）。索引每轮注入，正文按需 `recall_memory`。取代旧扁平 markdown。
+
+## compact / 记忆维护（2026-07-08 重构，取代 C4/C5）
+- **每天凌晨 4 点 daily compact**（`daily-compact.js` + `daily-scheduler.js`）：蒸当天对话进记忆条目 + 生成当日小结 + 推进 boundary（裁历史）。
+- **930k token 阈值兜底**（`util/tokens.js`）：单轮组装 context 估算超 930k → 消息路径里提前同步 compact。
+- **agent 有意识存**：小合聊天时主动 `remember` 重要事（实时）；daily compact 只兜底补漏 + 裁历史。
+- 已删：`idle-scheduler`（20min）、`distill.js`（旧扁平蒸馏）、12 轮滚动 compact。
 
 ## Build order
 - **C1 ✅ 已建（+2 路 codex review 硬化）**：反应式陪伴最小闭环。飞书 WS → 白名单私聊 → `runCompanionMessage`（静态人设 system + `renderCompanionTurn` 动态 turn + M3 + `remember_about_person` 工具 + companion 权限）→ 轻量流式卡。`npm run smoke` 12 项过。

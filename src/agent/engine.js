@@ -16,6 +16,23 @@
 
 const ERROR_TEXT = '抱歉，我暂时无法处理请求，请稍后再试。';
 const TOOL_TIMEOUT_MS = Number(process.env.BOT_TOOL_TIMEOUT_MS) || 30_000;
+const CARD_NOTE_MAX_CHARS = Number(process.env.XIAOHE_CARD_NOTE_MAX_CHARS) || 80;
+
+/** card_note 会上飞书卡（<font> 内）+ 进 tool_result：折叠空白、限长、防注入。 */
+function sanitizeCardNote(value) {
+  const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  const max = Math.max(8, CARD_NOTE_MAX_CHARS);
+  return text.length > max ? `${text.slice(0, max - 3)}...` : text;
+}
+function normalizeToolOutput(out) {
+  if (!out || typeof out !== 'object' || Array.isArray(out)) return out;
+  if (!Object.prototype.hasOwnProperty.call(out, 'card_note')) return out;
+  const cardNote = sanitizeCardNote(out.card_note);
+  const next = { ...out };
+  if (cardNote) next.card_note = cardNote; else delete next.card_note;
+  return next;
+}
 
 function extractText(content) {
   if (!Array.isArray(content)) return '';
@@ -76,6 +93,7 @@ export async function runEngine(opts) {
   const messages = [...initialMessages];
   const toolSteps = [];
   const toolSummaries = [];
+  let thinkingText = '';   // 跨轮累积的思考原文，供上层落库喂夜间 compact（实时上下文不回注）
 
   for (let round = 0; round < maxRounds; round++) {
     onRoundStart?.(round);
@@ -124,17 +142,21 @@ export async function runEngine(opts) {
 
     messages.push({ role: 'assistant', content: final.content });
 
+    // 累积当轮思考（interleaved 下每轮都可能有一段）——只为落库补记，不影响上下文
+    const roundThinking = final.content.filter(b => b.type === 'thinking').map(b => b.thinking || '').join('').trim();
+    if (roundThinking) thinkingText += (thinkingText ? '\n' : '') + roundThinking;
+
     const hasToolUse = final.content.some(b => b.type === 'tool_use');
 
     if (final.stop_reason === 'max_tokens') {
       const partial = extractText(final.content);
       const text = partial ? partial + '\n\n_(回复过长被截断)_' : ERROR_TEXT;
-      return { text, toolSteps, toolSummaries, truncated: true, final };
+      return { text, toolSteps, toolSummaries, truncated: true, final, thinkingText, messages };
     }
 
     if (final.stop_reason === 'end_turn' || !hasToolUse) {
       const text = extractText(final.content) || ERROR_TEXT;
-      return { text, toolSteps, toolSummaries, final };
+      return { text, toolSteps, toolSummaries, final, thinkingText, messages };
     }
 
     // ── 执行工具（step 1：串行）──
@@ -148,7 +170,7 @@ export async function runEngine(opts) {
     const errorInfos = [];
 
     for (const block of toolUseBlocks) {
-      const { content, isError, errorInfo } = await executeOne(block, { registry, permissions, baseCtx });
+      const { content, isError, errorInfo, result } = await executeOne(block, { registry, permissions, baseCtx });
 
       const tr = { type: 'tool_result', tool_use_id: block.id, content };
       if (isError) tr.is_error = true;
@@ -160,7 +182,9 @@ export async function runEngine(opts) {
       toolSummaries.push(`${block.name}(${inputBrief}) → ${marker}`);
 
       const step = toolSteps.find(s => s.blockId === block.id);
-      if (step) { step.done = true; if (errorInfo) step.error = errorInfo; }
+      // card_note = 模型调工具时自己填的"卡片上给用户看的一句"（工具自带兜底策略：提醒类总有、记忆/便笺可空）。
+      // 只有 card_note 非空才渲染操作 chip；成败也带上，失败不显误导性确认。
+      if (step) { step.done = true; step.ok = !isError; if (errorInfo) step.error = errorInfo; if (!isError && result?.card_note) step.summary = String(result.card_note); }
     }
 
     if (onToolDone) await onToolDone(toolSteps);
@@ -174,7 +198,7 @@ export async function runEngine(opts) {
         const summary = toolSummaries.slice(-failed.length).join('\n');
         return {
           text: `${ERROR_TEXT}\n\n本轮尝试：\n${summary}`,
-          toolSteps, toolSummaries, allFailed: true, exhausted: true,
+          toolSteps, toolSummaries, allFailed: true, exhausted: true, thinkingText, messages,
         };
       }
     }
@@ -184,7 +208,7 @@ export async function runEngine(opts) {
   const hint = tail ? `\n\n最近尝试：\n${tail}` : '';
   return {
     text: `查询过程过于复杂，请尝试更简单的问题。${hint}`,
-    toolSteps, toolSummaries, exhausted: true,
+    toolSteps, toolSummaries, exhausted: true, thinkingText, messages,
   };
 }
 
@@ -213,13 +237,15 @@ async function executeOne(block, { registry, permissions, baseCtx }) {
 
     const input = decision.updatedInput ?? block.input;
     await tool.validateInput(input, baseCtx);
-    const out = await callWithTimeout(tool, input, baseCtx, TOOL_TIMEOUT_MS);
+    let out = await callWithTimeout(tool, input, baseCtx, TOOL_TIMEOUT_MS);
+    out = normalizeToolOutput(out);
 
-    // 识别业务函数返回的结构化 error shape
-    if (out && out.ok === false && out.error) {
-      return { content: JSON.stringify(out, null, 2), isError: true, errorInfo: out.error };
+    // ok===false 一律当失败（哪怕只带 note、没带结构化 error，如 cancel 没找到钩子）——别当成功喂回模型
+    if (out && out.ok === false) {
+      const errorInfo = out.error || { category: 'tool_error', message: String(out.note || `${block.name} 返回 ok=false`), retryable: false, tool: block.name };
+      return { content: JSON.stringify(out, null, 2), isError: true, errorInfo };
     }
-    return { content: JSON.stringify(out, null, 2), isError: false, errorInfo: null };
+    return { content: JSON.stringify(out, null, 2), isError: false, errorInfo: null, result: out };
   } catch (err) {
     const category = err?.code === 'TOOL_TIMEOUT' ? 'timeout' : 'unknown';
     const errorInfo = { category, message: err?.message || String(err), retryable: category === 'timeout', tool: block.name };

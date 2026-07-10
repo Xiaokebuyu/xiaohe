@@ -13,6 +13,10 @@ import db from '../db/index.js';
 const now = () => new Date().toISOString();
 let _seq = 0;
 function entryId() { return `me_${Date.now().toString(36)}_${(_seq++).toString(36)}`; }
+function isAfter(a, b) {
+  const am = Date.parse(a || ''); const bm = Date.parse(b || '');
+  return Number.isFinite(am) && Number.isFinite(bm) && am > bm;
+}
 
 const _get = db.prepare(`SELECT * FROM memory_entries WHERE open_id=? AND id=?`);
 const _ins = db.prepare(`
@@ -52,9 +56,12 @@ export function ensureTopic(openId, title, summary = '') {
  * （避免"没传 body"把已有正文冲成空）。
  * @returns {string} entry id
  */
-export function upsertEntry(openId, { id = null, parentId = null, title = null, summary = null, body = null, salience = null }) {
+export function upsertEntry(openId, { id = null, parentId = null, title = null, summary = null, body = null, salience = null, updatedBeforeIso = null }) {
   const existing = (id && _get.get(openId, id)) || (title ? findByTitle(openId, title, parentId) : null);
   if (existing) {
+    // updatedBeforeIso：调用方（如 daily compact）读数据的时刻。若这条在那之后被更新过（用户实时 remember），
+    // 说明有更新的内容，别用旧摘要盖回去——实时写赢。
+    if (updatedBeforeIso && isAfter(existing.updated_at, updatedBeforeIso)) return existing.id;
     _upd.run({ openId, id: existing.id, parentId, title, summary, body, salience, ts: now() });
     return existing.id;
   }
@@ -68,8 +75,16 @@ export function upsertEntry(openId, { id = null, parentId = null, title = null, 
 }
 
 export function getEntry(openId, id) { return _get.get(openId, id) || null; }
+/** 删一条及其整棵子树（多级嵌套也删干净，不留孙节点孤儿）。 */
 export function deleteEntry(openId, id) {
-  db.prepare(`DELETE FROM memory_entries WHERE open_id=? AND (id=? OR parent_id=?)`).run(openId, id, id); // 连子条目
+  db.prepare(`
+    WITH RECURSIVE sub(id) AS (
+      SELECT id FROM memory_entries WHERE open_id=@openId AND id=@id
+      UNION ALL
+      SELECT m.id FROM memory_entries m JOIN sub ON m.parent_id = sub.id WHERE m.open_id=@openId
+    )
+    DELETE FROM memory_entries WHERE open_id=@openId AND id IN (SELECT id FROM sub)
+  `).run({ openId, id });
 }
 export function listTopics(openId) {
   return db.prepare(`SELECT * FROM memory_entries WHERE open_id=? AND parent_id IS NULL ORDER BY salience DESC, updated_at DESC`).all(openId);
@@ -104,6 +119,17 @@ export function renderMemoryIndex(openId, { maxChars = 3000 } = {}) {
   }
   let out = lines.join('\n');
   let truncated = false;
-  if (out.length > maxChars) { out = out.slice(0, maxChars); truncated = true; }
+  if (out.length > maxChars) {
+    // 按整行截断，不按字符硬切——否则可能把 "[me_xxx]" 切一半，模型看到残缺 id 后 recall 不到那条
+    truncated = true;
+    const kept = [];
+    let acc = 0;
+    for (const line of lines) {
+      if (acc + line.length + 1 > maxChars) break;
+      kept.push(line);
+      acc += line.length + 1;
+    }
+    out = kept.join('\n');
+  }
   return out + (truncated ? '\n（索引较长已截断；需要某条细节用 recall_memory 调正文。）' : '\n（这是索引；某条要看细节用 recall_memory 调正文。）');
 }

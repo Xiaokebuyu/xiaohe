@@ -116,6 +116,9 @@ function ensureColumn(table, column, decl) {
 }
 ensureColumn('companion_context', 'agent_note', 'TEXT');
 ensureColumn('companion_context', 'last_daily_compact_date', 'TEXT');
+ensureColumn('companion_hooks', 'recurrence', 'TEXT');   // NULL=一次性；'daily'/'weekly'=周期，发完滚到下一次
+ensureColumn('companion_hooks', 'recurrence_anchor', 'TEXT');   // 周期原始锚点（defer 不动它），防被延后后本地时刻漂移
+ensureColumn('companion_turns', 'thinking_text', 'TEXT');   // 模型当轮思考，仅供夜间 compact 补记（实时上下文不注入）
 
 console.log(`[Xiaohe/DB] SQLite 就绪 @ ${DB_PATH}`);
 

@@ -13,3 +13,5 @@ src/memory/_index.json
 !src/memory/.gitkeep
 !src/db/.gitkeep
 !logs/.gitkeep
+
+src/db/*.sqlite*

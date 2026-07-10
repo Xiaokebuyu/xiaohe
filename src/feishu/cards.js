@@ -164,6 +164,65 @@ export function buildChatCardInitial(scene = 'default') {
 
 // ── 陪伴专用卡（暖调，不用工作味的绿勾/耗时/"值班"）──
 
+// 陪伴 header/summary 的随机温柔文案池（不带耗时、不带绿勾、不带"完成"——只有"我在陪你"的在场感）
+const COMPANION_SUBTITLES = ['我在听', '慢慢说', '陪你捋一捋', '我在这儿'];
+const COMPANION_SUMMARIES = ['小合在听着呢', '小合陪你想一想', '慢慢说，我在'];
+const COMPANION_DONE_SUBTITLES = ['我在这儿', '先陪你说到这里', '慢慢来'];
+
+/** 统一构造暖调 header（默认 wathet + chat icon + 随机副标题；错误态可传橙色 warning）。 */
+function buildCompanionHeader(subtitle = pick(COMPANION_SUBTITLES), { template = 'wathet', icon = 'chat_outlined', color = 'wathet' } = {}) {
+  return {
+    title: { tag: 'plain_text', content: BOT_NAME },
+    subtitle: { tag: 'plain_text', content: subtitle },
+    icon: { tag: 'standard_icon', token: icon, color },
+    template,
+  };
+}
+
+/** 统一构造一段正文 markdown 元素（带段间留白，供每轮独立文本段用）。 */
+export function buildCompanionTextElement(elementId, content = '') {
+  return { tag: 'markdown', element_id: elementId, content, text_size: 'normal', margin: '0 0 10px 0' };
+}
+
+// 工具操作 → chip 前缀 emoji（只给"写"类操作显示确认，让用户看到小合真做了；recall 等只读的不显示）。
+// 每个"公开操作"配一个线性图标（standard_icon 只能放 icon 槽，不能当 body 元素——实测 10002）。不用 emoji。
+// update_working_note 是小合私有便笺，不该混进用户可见通道，故不列。
+const TOOL_CHIP_ICON = {
+  set_reminder: 'bell_outlined',    // 铃铛：挂了提醒
+  cancel_reminder: 'close_outlined', // 叉：撤了提醒
+  remember: 'edit_outlined',        // 笔：记下了
+};
+/** 某工具是否该在卡片上显示操作 chip。 */
+export function isChipTool(toolName) {
+  return Object.prototype.hasOwnProperty.call(TOOL_CHIP_ICON, toolName);
+}
+/**
+ * 操作确认 chip —— 灰底圆角**胶囊**（collapsible_panel 造型），header 左侧一个线性图标 + 灰字文案，
+ * 明确告诉用户"这个动作发生了"（防不安）。文案 text 由模型调工具时自己填（card_note）。
+ * 为什么用 collapsible_panel：飞书里只有它的 header 原生支持 icon 槽 + 圆角背景，能一行图标+文字成胶囊；
+ * 独立 standard_icon 元素飞书不认（实测 10002）。expanded:false + 空 elements → 就是个静态胶囊。
+ */
+export function buildCompanionActionChip(elementId, toolName, text) {
+  const token = TOOL_CHIP_ICON[toolName] || 'info_outlined';
+  const safeText = (String(text || '好的').replace(/\s+/g, ' ').trim() || '好的').replace(/[<>]/g, '');   // 去 <> 防破坏 <font>
+  return {
+    tag: 'collapsible_panel',
+    element_id: elementId,
+    expanded: false,
+    background_color: 'grey-50',
+    padding: '5px 12px 5px 12px',
+    margin: '4px 0 8px 0',
+    border: { corner_radius: '14px' },
+    header: {
+      title: { tag: 'markdown', content: `<font color='grey'>${safeText}</font>` },
+      vertical_align: 'center',
+      icon: { tag: 'standard_icon', token, size: '14px 14px', color: 'grey' },
+      icon_position: 'left',
+    },
+    elements: [],
+  };
+}
+
 /** 陪伴初始卡：温和 header + 空 body（summary 传"在听"的在场感，body 到 token 就填）。 */
 export function buildCompanionInitial() {
   return {
@@ -171,22 +230,94 @@ export function buildCompanionInitial() {
     config: {
       streaming_mode: true,
       streaming_config: STREAMING_CONFIG,
-      summary: { content: '小合在听着呢～' },
+      summary: { content: pick(COMPANION_SUMMARIES) },
       update_multi: true,
       width_mode: 'fill',
     },
-    header: { title: { tag: 'plain_text', content: BOT_NAME }, template: 'wathet' },
-    body: { elements: [{ tag: 'markdown', element_id: 'main_text_0', content: '' }] },
+    header: buildCompanionHeader(),
+    body: { elements: [buildCompanionTextElement('main_text_0')] },
   };
 }
 
-/** 陪伴完成卡：温和 header，无绿勾、无耗时、无"完成"语言。 */
-export function buildCompanionDone(bodyText) {
+/** 陪伴完成卡：温和 header，无绿勾、无耗时、无"完成"语言。body 由调用方传入完整 elements（保留已收起的思考胶囊）。 */
+export function buildCompanionDoneFromElements(elements) {
+  const bodyElements = Array.isArray(elements) && elements.length
+    ? elements
+    : [buildCompanionTextElement('main_text_0', '我刚刚没有组织好语言，能再跟我说一次吗？')];
   return {
     schema: '2.0',
     config: { streaming_mode: false, update_multi: true, width_mode: 'fill' },
-    header: { title: { tag: 'plain_text', content: BOT_NAME }, template: 'wathet' },
-    body: { elements: [{ tag: 'markdown', element_id: 'main_text_0', content: String(bodyText || '') }] },
+    header: buildCompanionHeader(pick(COMPANION_DONE_SUBTITLES)),
+    body: { elements: bodyElements },
+  };
+}
+
+/**
+ * 动作核查补正卡（独立后续卡，非流式）：小合"想起来补一句"+ 本次真实发生动作的灰字 chip，
+ * 让用户看见"这次真挂上了"——直接回应"你真挂了？"的验伪。不碰 streamer 收尾逻辑。
+ * @param {{ text: string, toolSteps?: Array }} p
+ */
+export function buildCorrectionCard({ text, toolSteps = [] }) {
+  const safe = String(text || '').replace(/[<>]/g, '').slice(0, 2000);
+  const elements = [buildCompanionTextElement('main_text_0', safe)];
+  let seq = 0;
+  for (const s of toolSteps) {
+    if (s?.done && s.ok && s.summary && isChipTool(s.name)) {
+      elements.push(buildCompanionActionChip(`action_${seq++}`, s.name, s.summary));
+    }
+  }
+  return {
+    schema: '2.0',
+    config: { update_multi: true, width_mode: 'fill' },
+    header: buildCompanionHeader('补一句'),
+    body: { elements },
+  };
+}
+
+/**
+ * 陪伴版思考胶囊 —— 展开态。比工作版语气软（"小合想了想"而非"思考中"），结构同 buildThinkingPill。
+ * @param {number} round
+ */
+export function buildCompanionThinkingPill(round) {
+  const id = `thinking_pill_r${round}`;
+  const textId = `thinking_text_r${round}`;
+  return [
+    {
+      tag: 'collapsible_panel',
+      element_id: id,
+      expanded: true,
+      background_color: 'default',
+      padding: '4px 12px 10px 12px',
+      margin: '6px 0 10px 0',
+      border: { corner_radius: '8px' },
+      header: {
+        title: { tag: 'markdown', content: "<font color='grey'>· 小合想了想...</font>" },
+        vertical_align: 'center',
+        padding: '4px 8px 4px 8px',
+        icon: { tag: 'standard_icon', token: 'add_outlined', size: '12px 12px', color: 'grey' },
+        icon_position: 'right',
+        icon_expanded_angle: -45,
+      },
+      elements: [
+        { tag: 'markdown', element_id: textId, content: '', text_size: 'notation', margin: '2px 0 0 0' },
+      ],
+    },
+  ];
+}
+
+/** 陪伴版思考胶囊收起 patch —— 只报耗时，不摘要（摘要留作后续，见 card-compare.md）。保留右侧展开箭头，可点开回看。 */
+export function buildCompanionPillCollapse(durationSec) {
+  const dur = Number(durationSec).toFixed(1);
+  return {
+    expanded: false,
+    header: {
+      title: { tag: 'markdown', content: `<font color='grey'>· 想了 ${dur}s</font>` },
+      vertical_align: 'center',
+      padding: '4px 8px 4px 8px',
+      icon: { tag: 'standard_icon', token: 'add_outlined', size: '12px 12px', color: 'grey' },
+      icon_position: 'right',
+      icon_expanded_angle: -45,
+    },
   };
 }
 
@@ -316,10 +447,12 @@ export function buildErrorCard(errorText) {
   return {
     schema: '2.0',
     config: { streaming_mode: false, update_multi: true, width_mode: 'fill' },
-    header: pickInitialHeader('error'),
+    header: buildCompanionHeader('我这边卡了一下', { icon: 'warning_outlined', color: 'orange', template: 'wathet' }),
     body: {
       elements: [
-        { tag: 'markdown', element_id: 'main_text_0', content: errorText },
+        buildCompanionTextElement('main_text_0', errorText),
+        { tag: 'hr' },
+        { tag: 'markdown', content: "<font color='grey'>你可以等一下再发我一次。</font>", text_size: 'notation' },
       ],
     },
   };

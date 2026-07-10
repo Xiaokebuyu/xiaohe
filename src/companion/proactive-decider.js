@@ -4,44 +4,21 @@
  */
 import { client, SUMMARY_MODEL } from '../model/client.js';
 import { formatBeijingNow } from '../util/time.js';
-import { lastProactiveAt, getContext } from './store.js';
+import { getContext } from './store.js';
 import { renderMemoryIndex } from './memory-store.js';
 import { extractJson } from '../util/json.js';
 
 const DECIDE_MODEL = process.env.BOT_COMPANION_DISTILL_MODEL || SUMMARY_MODEL;
-const COOLDOWN_MS = Number(process.env.XIAOHE_PROACTIVE_COOLDOWN_MS) || 20 * 60 * 60 * 1000;  // 20h 内不重复主动
-const USER_ACTIVE_MS = Number(process.env.XIAOHE_PROACTIVE_USER_ACTIVE_MS) || 30 * 60 * 1000; // 用户 30 分钟内活跃就不打扰
-
-/** 静默时段：默认 22:00–08:00（北京）。person.quiet_hours_json 可覆盖 {start,end}。 */
-function inQuietHours(person) {
-  let start = 22, end = 8;
-  try { const q = person?.quiet_hours_json && JSON.parse(person.quiet_hours_json); if (q) { start = q.start ?? start; end = q.end ?? end; } } catch { /* default */ }
-  const { dateTime } = formatBeijingNow();
-  const hour = Number(dateTime.slice(11, 13));
-  return start > end ? (hour >= start || hour < end) : (hour >= start && hour < end);
-}
 
 /**
- * 硬门：不满足直接不发。返回 { pass, reason }。
+ * 硬门（用户已定"全拆"：冷却/活跃/静默时段全去掉，钩子到点就发）。
+ * 只剩「人存不存在 / 被没被禁用」这类合法性校验——不是免打扰门，是发不出去的前置。
+ * 「此刻发合不合适」交给 softDecide 的 LLM 软判断（autonomous），user_requested 直接发。
  * @param {Object} person companion_people 行
  */
 export function hardGate(person) {
   if (!person) return { pass: false, reason: 'no_person' };
   if (person.enabled === 0) return { pass: false, reason: 'disabled' };
-  if (inQuietHours(person)) return { pass: false, reason: 'quiet_hours' };
-
-  const now = Date.now();
-  if (person.last_user_at && now - Date.parse(person.last_user_at) < USER_ACTIVE_MS) {
-    return { pass: false, reason: 'user_recently_active' };   // 人还在，不用主动凑
-  }
-  const lastPro = lastProactiveAt(person.open_id);
-  if (lastPro && now - Date.parse(lastPro) < COOLDOWN_MS) {
-    return { pass: false, reason: 'cooldown' };
-  }
-  // 上次主动后用户没回（outbound 晚于 last_user_at）→ 别追着打扰
-  if (lastPro && (!person.last_user_at || Date.parse(lastPro) > Date.parse(person.last_user_at))) {
-    return { pass: false, reason: 'unanswered_last_outreach' };
-  }
   return { pass: true, reason: 'ok' };
 }
 
@@ -57,6 +34,7 @@ export async function softDecide({ openId, boundUser, hook }) {
 
   const system = `你是"小合"——温柔知心的陪伴者。现在要判断：此刻主动私聊这个人合不合适，如果合适，说一句什么。
 非常克制：只有当"这一句真的对他有意义、此刻不突兀"才发。宁可不发。别为了刷存在感发。
+看当前时间：深夜/凌晨（约 23:00–7:00）除非事情很要紧，否则别打扰，让他睡；这个点大多数关心都可以等天亮。
 输出严格 JSON：{"send": true/false, "reason": "一句话理由", "message": "要发的话（温柔、短、自然，像朋友随口关心；不发则空串）"}`;
 
   const sourceHint = payload.source === 'user_requested'

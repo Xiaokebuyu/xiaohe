@@ -24,6 +24,7 @@ export const rememberTool = defineTool({
       body: { type: 'string', description: '可选，更详细的内容（不进索引，按需 recall）' },
       salience: { type: 'integer', minimum: 1, maximum: 5, description: '重要度 1-5（默认 3；越重要越不会被裁剪）' },
       entry_id: { type: 'string', description: '可选，更新已有条目就传它的 id（me_xxx）' },
+      card_note: { type: 'string', maxLength: 80, description: '公开显示在卡片上的一句短确认（你自己的语气）。可选；别写隐私细节或长内容。' },
     },
     required: ['topic', 'title', 'summary'],
   },
@@ -44,7 +45,7 @@ export const rememberTool = defineTool({
       body: input.body ?? null,          // 没传=保留原正文（别冲空）
       salience: input.salience ?? null,  // 没传=保留原重要度
     });
-    return { ok: true, entry_id: id, topic: input.topic, note: `记下了「${input.title}」` };
+    return { ok: true, entry_id: id, topic: input.topic, card_note: input.card_note || null, note: `记下了「${input.title}」` };
   },
 });
 
