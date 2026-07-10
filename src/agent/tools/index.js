@@ -6,8 +6,9 @@ import { ToolRegistry } from '../tool-registry.js';
 import { rememberTool, recallMemoryTool } from './memory.js';
 import { setReminderTool, cancelReminderTool } from './reminder.js';
 import { updateWorkingNoteTool } from './note.js';
+import { webSearchTool } from './web.js';
 
-/** 陪伴场景：记忆（多级索引 记/调）+ 自主设/撤主动关心钩子 + 自管便笺。 */
+/** 陪伴场景：记忆（多级索引 记/调）+ 自主设/撤主动关心钩子 + 自管便笺 + 联网搜索（只读）。 */
 export function buildCompanionRegistry() {
   return new ToolRegistry([
     rememberTool,
@@ -15,5 +16,6 @@ export function buildCompanionRegistry() {
     setReminderTool,
     cancelReminderTool,
     updateWorkingNoteTool,
+    webSearchTool,
   ]);
 }
