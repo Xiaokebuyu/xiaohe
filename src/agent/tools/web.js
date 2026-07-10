@@ -89,6 +89,7 @@ export const webSearchTool = defineTool({
 
     const hits = normalizeBaiduHits(raw, n);
     if (!hits.length) return { ok: false, note: '没搜到相关结果，可以换个说法再试一次，或告诉他没查到' };
-    return { ok: true, query: input.query, provider: 'baidu', hits };
+    // card_note → 卡片上的操作 chip：让用户看到答案是现查的（搜索词公开无妨，本来就是他问的事）
+    return { ok: true, query: input.query, provider: 'baidu', hits, card_note: `查了「${input.query}」` };
   },
 });

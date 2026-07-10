@@ -191,6 +191,7 @@ const TOOL_CHIP_ICON = {
   set_reminder: 'bell_outlined',    // 铃铛：挂了提醒
   cancel_reminder: 'close_outlined', // 叉：撤了提醒
   remember: 'edit_outlined',        // 笔：记下了
+  web_search: 'search_outlined',    // 放大镜：查了网（只读但用户该知道答案是现查的）
 };
 /** 某工具是否该在卡片上显示操作 chip。 */
 export function isChipTool(toolName) {
